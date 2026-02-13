@@ -1,70 +1,148 @@
-const { default: makeWASocket, useMultiFileAuthState } = require("@whiskeysockets/baileys");
-const readline = require("readline");
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+  makeInMemoryStore,
+} = require("@whiskeysockets/baileys");
 
-const botName = "SOURY";
+const pino = require("pino");
+const fs = require("fs");
 
-const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout
-});
+const ownerNumber = process.env.OWNER_NUMBER; // 2557xxxxxxx
 
 async function startBot() {
-    const { state, saveCreds } = await useMultiFileAuthState("auth");
+  const { state, saveCreds } = await useMultiFileAuthState("session");
+  const { version } = await fetchLatestBaileysVersion();
 
-    const sock = makeWASocket({
-        auth: state,
-        printQRInTerminal: false
-    });
+  const sock = makeWASocket({
+    version,
+    logger: pino({ level: "silent" }),
+    auth: state,
+    printQRInTerminal: false,
+  });
 
-    sock.ev.on("creds.update", saveCreds);
+  // Pairing code
+  if (!sock.authState.creds.registered) {
+    const code = await sock.requestPairingCode(process.env.PHONE_NUMBER);
+    console.log("Pairing Code:", code);
+  }
 
-    if (!sock.authState.creds.registered) {
-        rl.question("Enter your WhatsApp number (with country code): ", async (number) => {
-            const code = await sock.requestPairingCode(number);
-            console.log("Your pairing code:", code);
-        });
+  sock.ev.on("creds.update", saveCreds);
+
+  sock.ev.on("connection.update", (update) => {
+    const { connection, lastDisconnect } = update;
+
+    if (connection === "close") {
+      const shouldReconnect =
+        lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+      if (shouldReconnect) startBot();
+    } else if (connection === "open") {
+      console.log("✅ BOT CONNECTED");
+    }
+  });
+
+  sock.ev.on("messages.upsert", async ({ messages }) => {
+    const msg = messages[0];
+    if (!msg.message) return;
+
+    const from = msg.key.remoteJid;
+    const isGroup = from.endsWith("@g.us");
+    const sender = isGroup ? msg.key.participant : from;
+    const body =
+      msg.message.conversation ||
+      msg.message.extendedTextMessage?.text ||
+      "";
+
+    const command = body.split(" ")[0].toLowerCase();
+    const args = body.split(" ").slice(1);
+
+    const isOwner = sender.includes(ownerNumber);
+
+    // MENU
+    if (command === ".menu") {
+      await sock.sendMessage(from, {
+        text: `🤖 *FULL SOURY BOT*
+
+Commands:
+.menu
+.ping
+.owner
+.tagall
+.kick
+.add
+.delete
+.sticker
+.public
+.private`,
+      });
     }
 
-    sock.ev.on("connection.update", (update) => {
-        const { connection } = update;
+    // PING
+    if (command === ".ping") {
+      await sock.sendMessage(from, { text: "🏓 Pong!" });
+    }
 
-        if (connection === "open") {
-            console.log("SOURY bot connected successfully ✅");
-        }
-    });
+    // OWNER
+    if (command === ".owner") {
+      await sock.sendMessage(from, {
+        text: `👑 Owner: wa.me/${ownerNumber}`,
+      });
+    }
 
-    sock.ev.on("messages.upsert", async ({ messages }) => {
-        const msg = messages[0];
-        if (!msg.message) return;
+    // TAG ALL
+    if (command === ".tagall" && isGroup) {
+      const metadata = await sock.groupMetadata(from);
+      const participants = metadata.participants;
 
-        const text =
-            msg.message.conversation ||
-            msg.message.extendedTextMessage?.text;
+      let teks = "📢 TAG ALL\n\n";
+      let mentions = [];
 
-        const from = msg.key.remoteJid;
+      participants.forEach((p) => {
+        teks += `@${p.id.split("@")[0]}\n`;
+        mentions.push(p.id);
+      });
 
-        // commands
-        if (text === ".ping") {
-            await sock.sendMessage(from, { text: "pong 🏓" });
-        }
+      await sock.sendMessage(from, { text: teks, mentions });
+    }
 
-        if (text === ".hi") {
-            await sock.sendMessage(from, {
-                text: `Habari, mimi ni ${botName} 🤖`
-            });
-        }
+    // KICK
+    if (command === ".kick" && isGroup) {
+      const mention = msg.message.extendedTextMessage?.contextInfo?.mentionedJid;
+      if (mention) {
+        await sock.groupParticipantsUpdate(from, mention, "remove");
+      }
+    }
 
-        if (text === ".menu") {
-            await sock.sendMessage(from, {
-                text:
-`🤖 *${botName} MENU*
+    // ADD
+    if (command === ".add" && isGroup) {
+      if (!args[0]) return;
+      const number = args[0] + "@s.whatsapp.net";
+      await sock.groupParticipantsUpdate(from, [number], "add");
+    }
 
-.ping - test bot
-.hi - salamu
-.menu - menu ya commands`
-            });
-        }
-    });
+    // DELETE MESSAGE
+    if (command === ".delete") {
+      if (!msg.message.extendedTextMessage) return;
+      const key = msg.message.extendedTextMessage.contextInfo.stanzaId;
+      await sock.sendMessage(from, { delete: { remoteJid: from, fromMe: false, id: key } });
+    }
+
+    // PUBLIC / PRIVATE MODE
+    let publicMode = true;
+
+    if (command === ".private" && isOwner) {
+      publicMode = false;
+      await sock.sendMessage(from, { text: "Bot is now PRIVATE" });
+    }
+
+    if (command === ".public" && isOwner) {
+      publicMode = true;
+      await sock.sendMessage(from, { text: "Bot is now PUBLIC" });
+    }
+
+    if (!publicMode && !isOwner) return;
+  });
 }
 
 startBot();
