@@ -1,0 +1,61 @@
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require("@whiskeysockets/baileys");
+const pino = require("pino");
+
+async function startBot() {
+  const { state, saveCreds } = await useMultiFileAuthState("session");
+
+  const sock = makeWASocket({
+    logger: pino({ level: "silent" }),
+    auth: state,
+    printQRInTerminal: false,
+  });
+
+  // Pairing code (for Render or servers)
+  if (!sock.authState.creds.registered) {
+    const phoneNumber = process.env.PHONE_NUMBER;
+    const code = await sock.requestPairingCode(phoneNumber);
+    console.log("Pairing code:", code);
+  }
+
+  sock.ev.on("creds.update", saveCreds);
+
+  sock.ev.on("connection.update", (update) => {
+    const { connection, lastDisconnect } = update;
+
+    if (connection === "close") {
+      const shouldReconnect =
+        lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+
+      if (shouldReconnect) {
+        startBot();
+      }
+    } else if (connection === "open") {
+      console.log("Bot connected successfully");
+    }
+  });
+
+  // Auto reply
+  sock.ev.on("messages.upsert", async ({ messages }) => {
+    const msg = messages[0];
+    if (!msg.message) return;
+
+    const from = msg.key.remoteJid;
+    const text =
+      msg.message.conversation ||
+      msg.message.extendedTextMessage?.text;
+
+    if (!text) return;
+
+    if (text.toLowerCase() === "ping") {
+      await sock.sendMessage(from, { text: "pong" });
+    }
+
+    if (text.toLowerCase() === "menu") {
+      await sock.sendMessage(from, {
+        text: "🤖 SOURY BOT\n\nCommands:\n- ping\n- menu",
+      });
+    }
+  });
+}
+
+startBot();
