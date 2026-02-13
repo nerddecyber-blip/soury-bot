@@ -1,0 +1,13 @@
+{
+  "name": "soury-bot",
+  "version": "1.0.0",
+  "description": "SOURY WhatsApp Bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.21",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
