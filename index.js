@@ -2,14 +2,13 @@ const {
   default: makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
-  fetchLatestBaileysVersion,
-  makeInMemoryStore,
+  fetchLatestBaileysVersion
 } = require("@whiskeysockets/baileys");
 
 const pino = require("pino");
 const fs = require("fs");
-
-const ownerNumber = process.env.OWNER_NUMBER; // 2557xxxxxxx
+const ytdl = require("ytdl-core");
+const config = require("./config");
 
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState("session");
@@ -19,7 +18,6 @@ async function startBot() {
     version,
     logger: pino({ level: "silent" }),
     auth: state,
-    printQRInTerminal: false,
   });
 
   // Pairing code
@@ -32,13 +30,12 @@ async function startBot() {
 
   sock.ev.on("connection.update", (update) => {
     const { connection, lastDisconnect } = update;
-
     if (connection === "close") {
       const shouldReconnect =
         lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
       if (shouldReconnect) startBot();
     } else if (connection === "open") {
-      console.log("✅ BOT CONNECTED");
+      console.log("SOURY connected");
     }
   });
 
@@ -47,101 +44,90 @@ async function startBot() {
     if (!msg.message) return;
 
     const from = msg.key.remoteJid;
-    const isGroup = from.endsWith("@g.us");
-    const sender = isGroup ? msg.key.participant : from;
-    const body =
+    const text =
       msg.message.conversation ||
       msg.message.extendedTextMessage?.text ||
       "";
 
-    const command = body.split(" ")[0].toLowerCase();
-    const args = body.split(" ").slice(1);
+    if (!text.startsWith(config.prefix)) return;
 
-    const isOwner = sender.includes(ownerNumber);
+    const args = text.slice(1).trim().split(" ");
+    const cmd = args.shift().toLowerCase();
 
-    // MENU
-    if (command === ".menu") {
+    // MENU WITH IMAGE
+    if (cmd === "menu") {
       await sock.sendMessage(from, {
-        text: `🤖 *FULL SOURY BOT*
+        image: fs.readFileSync("./menu.jpg"),
+        caption: `🤖 *${config.botName}*
 
 Commands:
 .menu
 .ping
+.play <song>
+.yt <link>
 .owner
-.tagall
-.kick
-.add
-.delete
-.sticker
-.public
-.private`,
+`,
       });
     }
 
     // PING
-    if (command === ".ping") {
-      await sock.sendMessage(from, { text: "🏓 Pong!" });
+    if (cmd === "ping") {
+      await sock.sendMessage(from, { text: "pong" });
     }
 
     // OWNER
-    if (command === ".owner") {
+    if (cmd === "owner") {
       await sock.sendMessage(from, {
-        text: `👑 Owner: wa.me/${ownerNumber}`,
+        text: `Owner: wa.me/${config.ownerNumber}`,
       });
     }
 
-    // TAG ALL
-    if (command === ".tagall" && isGroup) {
-      const metadata = await sock.groupMetadata(from);
-      const participants = metadata.participants;
+    // YOUTUBE MUSIC DOWNLOAD
+    if (cmd === "play") {
+      if (!args[0]) {
+        return sock.sendMessage(from, { text: "Send YouTube link" });
+      }
 
-      let teks = "📢 TAG ALL\n\n";
-      let mentions = [];
+      const url = args[0];
 
-      participants.forEach((p) => {
-        teks += `@${p.id.split("@")[0]}\n`;
-        mentions.push(p.id);
-      });
+      try {
+        const stream = ytdl(url, { filter: "audioonly" });
+        const file = "song.mp3";
 
-      await sock.sendMessage(from, { text: teks, mentions });
-    }
-
-    // KICK
-    if (command === ".kick" && isGroup) {
-      const mention = msg.message.extendedTextMessage?.contextInfo?.mentionedJid;
-      if (mention) {
-        await sock.groupParticipantsUpdate(from, mention, "remove");
+        stream.pipe(fs.createWriteStream(file)).on("finish", async () => {
+          await sock.sendMessage(from, {
+            audio: fs.readFileSync(file),
+            mimetype: "audio/mp4",
+          });
+          fs.unlinkSync(file);
+        });
+      } catch (e) {
+        sock.sendMessage(from, { text: "Download error" });
       }
     }
 
-    // ADD
-    if (command === ".add" && isGroup) {
-      if (!args[0]) return;
-      const number = args[0] + "@s.whatsapp.net";
-      await sock.groupParticipantsUpdate(from, [number], "add");
+    // YOUTUBE VIDEO DOWNLOAD
+    if (cmd === "yt") {
+      if (!args[0]) {
+        return sock.sendMessage(from, { text: "Send YouTube link" });
+      }
+
+      const url = args[0];
+
+      try {
+        const stream = ytdl(url, { quality: "18" });
+        const file = "video.mp4";
+
+        stream.pipe(fs.createWriteStream(file)).on("finish", async () => {
+          await sock.sendMessage(from, {
+            video: fs.readFileSync(file),
+          });
+          fs.unlinkSync(file);
+        });
+      } catch (e) {
+        sock.sendMessage(from, { text: "Download error" });
+      }
     }
-
-    // DELETE MESSAGE
-    if (command === ".delete") {
-      if (!msg.message.extendedTextMessage) return;
-      const key = msg.message.extendedTextMessage.contextInfo.stanzaId;
-      await sock.sendMessage(from, { delete: { remoteJid: from, fromMe: false, id: key } });
-    }
-
-    // PUBLIC / PRIVATE MODE
-    let publicMode = true;
-
-    if (command === ".private" && isOwner) {
-      publicMode = false;
-      await sock.sendMessage(from, { text: "Bot is now PRIVATE" });
-    }
-
-    if (command === ".public" && isOwner) {
-      publicMode = true;
-      await sock.sendMessage(from, { text: "Bot is now PUBLIC" });
-    }
-
-    if (!publicMode && !isOwner) return;
   });
 }
 
